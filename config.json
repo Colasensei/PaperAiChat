@@ -1,0 +1,41 @@
+{
+  "api_key": "sk-22dcc9907f984a948b1215336e5a74c8",
+  "api_url": "https://api.deepseek.com",
+  "model_name": "deepseek-chat",
+  "ocr_langs": [
+    "ch_sim",
+    "en"
+  ],
+  "use_gpu": false,
+  "message_region": {
+    "x1": 660,
+    "y1": 965,
+    "x2": 1336,
+    "y2": 1382,
+    "width": 676,
+    "height": 417
+  },
+  "prompt_file": "C:\\Users\\colas\\Documents\\code\\PaperAiChat\\1.txt",
+  "check_interval": 1.0,
+    "debug_mode": false,
+    "save_screenshots": false,
+    "max_history": 15,
+    "min_message_length": 2,
+    "segment_delimiter": "||",
+    "ignore_null_response": true,
+    "human_pace": "平衡",
+    "base_delay_factor": 1.0,
+    "max_response_time": 5,
+    "min_think_time": 1.0,
+    "max_think_time": 3.0,
+    "typing_speed_min": 3,
+    "typing_speed_max": 8,
+    "show_typing_indicator": true,
+    "adaptive_speed": true,
+    "active_message_frequency": 1,
+    "active_message_min_interval": 360,
+    "active_message_max_interval": 600,
+    "max_daily_active_messages": 8,
+    "min_user_inactive_time": 60,
+    "active_message_cooldown": 300
+}

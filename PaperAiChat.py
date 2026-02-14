@@ -74,7 +74,18 @@ class EasyOCRChatBot:
         self.user_inactive_duration = 0
         self.daily_active_count = 0
         self.last_reset_date = datetime.now().date()
+
+        # 尝试导入 pyperclipimg
+        try:
+            import pyperclipimg
+            self.has_pyperclipimg = True
+        except ImportError:
+            self.has_pyperclipimg = False
+            self.log_warning("未安装 pyperclipimg，表情图片功能将不可用。请安装：pip install pyperclipimg", category="IMPORT")       
         
+        self.config.setdefault('enable_emoticon', True)
+        self.config.setdefault('emoticon_folder', 'Emoticon')
+
         # 启动命令监听线程
         self.command_thread = threading.Thread(target=self.command_listener, daemon=True)
         self.command_thread.start()
@@ -593,7 +604,7 @@ class EasyOCRChatBot:
                 return prompt
             except Exception as e:
                 self.log_error(f"读取提示词文件失败: {e}", category="PROMPT")
-                return self.config.get('system_prompt', '你是一个友好的AI助手。')
+                return self.config.get('system_prompt', '你是一个友好的AI助手。模拟真实对话，不使用markdown格式。模拟真实线上聊天，用"||"将回复隔开。每段一般不超过10字。网络聊天，尽量少用标点。不要出现换行符。如果用户的内容是完全无法理解的奇异内容（考虑识图错误）或你完全无法回复，输出"null"')
         else:
             return self.config.get('system_prompt', '你是一个友好的AI助手。')
     
@@ -748,63 +759,124 @@ class EasyOCRChatBot:
         return speed
     
     def simulate_human_typing(self, text):
-        """模拟真人打字 - 逐个字符复制粘贴"""
+        """模拟真人打字，支持表情图片[文件名]"""
         if not text:
             return
         
-        # 计算预计打字时间
-        typing_speed = self.calculate_typing_speed(len(text))
-        expected_time = len(text) / typing_speed
+        # 计算预计打字时间（仅文本部分，图片部分单独处理）
+        text_only = self.strip_emoticon_tags(text)  # 用于估算时间
+        typing_speed = self.calculate_typing_speed(len(text_only))
+        expected_time = len(text_only) / typing_speed
         
-        self.total_typed_chars += len(text)
+        self.total_typed_chars += len(text_only)
         self.total_typing_time += expected_time
         
-        self.log_info(f"开始打字: {len(text)} 字符, 速度: {typing_speed:.1f}字符/秒, 预计: {expected_time:.1f}秒", category="TYPING")
+        self.log_info(f"开始打字: 文本长度 {len(text_only)} 字符, 速度: {typing_speed:.1f}字符/秒, 预计文本时间: {expected_time:.1f}秒", category="TYPING")
         
-        # 逐个字符处理
-        for i, char in enumerate(text):
-            # 复制单个字符到剪贴板
-            pyperclip.copy(char)
-            time.sleep(0.01)  # 极小延迟确保剪贴板更新
+        i = 0
+        n = len(text)
+        
+        while i < n:
+            char = text[i]
             
-            # 粘贴
+            # 检测到表情开始标记 [
+            if char == '[' and self.config.get('enable_emoticon', True) and self.has_pyperclipimg:
+                # 查找匹配的 ]
+                j = text.find(']', i + 1)
+                if j != -1:
+                    # 提取图片名
+                    img_name = text[i+1:j].strip()
+                    if img_name:
+                        self.process_emoticon(img_name)
+                    # 跳过已处理的表情标记
+                    i = j + 1
+                    continue
+                else:
+                    # 没有找到匹配的 ]，当作普通字符处理
+                    pass
+            
+            # 普通字符处理：逐个复制粘贴
+            pyperclip.copy(char)
+            time.sleep(0.01)
             pyautogui.hotkey('ctrl', 'v')
             
-            # 根据打字速度计算字符间隔
-            # 基础间隔 = 1/速度
+            # 计算字符间隔
             base_interval = 1.0 / typing_speed
-            
-            # 添加随机波动（±20%）
             interval = base_interval * random.uniform(0.8, 1.2)
             
-            # 特殊字符后的额外停顿
+            # 标点符号额外停顿
             if char in ['.', '。', '!', '！', '?', '？', ',', '，', ';', '；', '\n']:
                 interval += random.uniform(0.1, 0.3)
             
-            # 每输入10个字符显示一次进度
-            if (i + 1) % 10 == 0 or i == len(text) - 1:
-                progress = (i + 1) / len(text) * 100
-                self.log_debug(f"打字进度: {progress:.0f}% ({i+1}/{len(text)}字符)", category="TYPING")
+            # 进度显示
+            if (i + 1) % 10 == 0 or i == n - 1:
+                progress = (i + 1) / n * 100
+                self.log_debug(f"打字进度: {progress:.0f}% ({i+1}/{n}总字符)", category="TYPING")
             
-            # 等待下一个字符
             time.sleep(interval)
+            i += 1
         
-        # 最后的停顿（模拟检查）
-        final_pause = random.uniform(0.3, 0.8)
+        # 输入完成后的停顿
+        final_pause = random.uniform(0.2, 0.5)
         time.sleep(final_pause)
         
-        self.log_debug(f"打字完成: 实际用时 {expected_time:.1f} 秒, 共 {len(text)} 字符", category="TYPING")
+        self.log_debug(f"段落输入完成: 共处理 {n} 字符（含表情标记）", category="TYPING")
+
+    def strip_emoticon_tags(self, text):
+        """去除表情标记，返回纯文本（用于时间估算）"""
+        import re
+        return re.sub(r'\[[^\]]*\]', '', text)
+
+    def process_emoticon(self, img_name):
+        """处理表情图片：从Emoticon文件夹复制并发送"""
+        try:
+            # 构建图片路径
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            emoticon_folder = self.config.get('emoticon_folder', 'Emoticon')
+            img_path = os.path.join(script_dir, emoticon_folder, img_name)
+            
+            # 如果文件名不含扩展名，尝试常见扩展名
+            if not os.path.splitext(img_path)[1]:
+                for ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
+                    test_path = img_path + ext
+                    if os.path.exists(test_path):
+                        img_path = test_path
+                        break
+            
+            if not os.path.exists(img_path):
+                self.log_error(f"表情图片不存在: {img_path}", category="EMOTICON")
+                return
+            
+            # 复制图片到剪贴板
+            import pyperclipimg
+            pyperclipimg.copy(img_path)
+            self.log_info(f"已复制表情图片: {img_name}", category="EMOTICON")
+            
+            # 粘贴并发送
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.2)
+            pyautogui.press('enter')
+            self.log_info("表情图片已发送", category="EMOTICON")
+            
+            # 发送后稍作停顿，模拟真人操作
+            time.sleep(random.uniform(0.5, 1.0))
+            
+        except Exception as e:
+            self.log_error(f"处理表情图片失败: {e}", category="EMOTICON")
     
     def get_ai_response(self, message):
-        """获取AI回复"""
+        """获取AI回复，并将空行转换为分隔符"""
         try:
             system_prompt = self.get_system_prompt()
             
+            # 构建消息历史
             messages = [{"role": "system", "content": system_prompt}]
             
+            # 添加上下文
             for hist in self.conversation_history[-self.config['max_history']:]:
                 messages.append(hist)
             
+            # 添加当前消息
             messages.append({"role": "user", "content": message})
             
             self.log_debug(f"发送API请求: {self.config['model_name']}", category="API")
@@ -821,11 +893,12 @@ class EasyOCRChatBot:
             elapsed = (time.time() - start_time) * 1000
             reply = response.choices[0].message.content
             
-            # 记录响应时间
-            self.response_times.append(elapsed / 1000)
-            if len(self.response_times) > 10:
-                self.response_times.pop(0)
-            self.avg_response_time = sum(self.response_times) / len(self.response_times)
+            # 【新增】处理空行转换为分隔符
+            original_reply = reply
+            reply = self.convert_empty_lines_to_delimiter(reply)
+            
+            if original_reply != reply:
+                self.log_info(f"空行转换: 将 {reply.count('||')} 个空行转换为分隔符", category="FORMAT")
             
             self.log_info(f"API响应: {elapsed:.0f}ms, 长度: {len(reply)}", category="API")
             
@@ -839,6 +912,7 @@ class EasyOCRChatBot:
             self.conversation_history.append({"role": "user", "content": message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             
+            # 限制历史长度
             max_history = self.config['max_history']
             if len(self.conversation_history) > max_history * 2:
                 self.conversation_history = self.conversation_history[-max_history*2:]
@@ -848,6 +922,47 @@ class EasyOCRChatBot:
         except Exception as e:
             self.log_error(f"API请求失败: {e}", category="API")
             return None
+
+    def convert_empty_lines_to_delimiter(self, text):
+        """将连续空行转换为分隔符，同时删除换行符"""
+        if not text:
+            return text
+        
+        import re
+        
+        # 步骤1: 按行分割
+        lines = text.split('\n')
+        
+        # 步骤2: 处理每一行，去除首尾空格
+        lines = [line.strip() for line in lines]
+        
+        # 步骤3: 过滤掉完全空的行（但保留有内容的行）
+        # 同时，将连续的空行标记为分隔符位置
+        result = []
+        empty_line_count = 0
+        last_was_empty = False
+        
+        for line in lines:
+            if line == "":  # 空行
+                if not last_was_empty and result:  # 第一次遇到空行，且前面有内容
+                    empty_line_count = 1
+                    last_was_empty = True
+                else:
+                    empty_line_count += 1
+            else:  # 有内容的行
+                # 如果之前有空行，且空行数量达到阈值（至少1个空行），添加分隔符
+                if empty_line_count > 0 and result:
+                    # 多个空行也只添加一个分隔符
+                    result.append(self.config.get('segment_delimiter', '||'))
+                    empty_line_count = 0
+                
+                result.append(line)
+                last_was_empty = False
+        
+        # 步骤4: 连接所有内容（删除换行符）
+        final_text = ''.join(result)
+        
+        return final_text
     
     def calculate_human_segment_delay(self, segment_index, total_segments, segment_text, previous_segment_text=""):
         """计算人性化段落间隔"""
