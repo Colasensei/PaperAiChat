@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "saved_at": "2026-02-14T16:11:36.151882",
+  "config_snapshot": {
+    "api_url": "https://api.deepseek.com",
+    "model_name": "deepseek-chat",
+    "prompt_file": "C:\\Users\\colas\\Documents\\code\\PaperAiChat\\1.txt",
+    "system_prompt": null,
+    "segment_delimiter": "||"
+  },
+  "state": {
+    "conversation_history": [
+      {
+        "role": "assistant",
+        "content": "刚看到个超好笑的段子[1.gif]||分享给你看看[1.gif]"
+      },
+      {
+        "role": "user",
+        "content": "什么段子啊"
+      },
+      {
+        "role": "assistant",
+        "content": "说有个程序员去面试[1.gif]||面试官问他会啥[1.gif]||他说我啥都会[1.gif]"
+      },
+      {
+        "role": "user",
+        "content": "那很厉害了"
+      },
+      {
+        "role": "assistant",
+        "content": "结果让他修打印机[1.gif]||当场就懵了[1.gif]||笑死我了[1.gif]"
+      }
+    ],
+    "message_count": 3,
+    "active_message_count": 1,
+    "daily_active_count": 1,
+    "last_active_message_time": 1771056585.0294032,
+    "last_user_message_time": 1771056664.6425939,
+    "last_message_hash": "cc76d34be316c19359ceb30e87680482",
+    "total_typed_chars": 55,
+    "total_typing_time": 12.090180778792018,
+    "avg_response_time": 1.3257184028625488,
+    "response_times": [
+      1.2533056735992432,
+      1.3981311321258545
+    ],
+    "null_response_count": 0,
+    "error_count": 0,
+    "last_reset_date": "2026-02-14"
+  }
+}

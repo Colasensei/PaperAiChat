@@ -47,7 +47,7 @@ echo.
 echo [2/4] 检查依赖包...
 
 :: 检查是否已安装依赖
-python -c "import easyocr, pyautogui, pyperclip, keyboard, openai, PIL, numpy, schedule" >nul 2>&1
+python -c "import easyocr, pyautogui, pyperclip, keyboard, openai, PIL, numpy, schedule,pyperclipimg" >nul 2>&1
 if errorlevel 1 (
     echo [信息] 正在安装依赖包（使用清华镜像源）...
     echo.
@@ -61,6 +61,7 @@ if errorlevel 1 (
     pip install Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install numpy -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install schedule -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip install pyperclipimg -i https://pypi.tuna.tsinghua.edu.cn/simple
     
     echo.
     echo [成功] 依赖包安装完成
@@ -83,6 +84,36 @@ if not exist "PaperAiChat.py" (
 echo [成功] 找到 PaperAiChat.py
 echo.
 
+:: 存档选择
+set "ARCHIVE_ARG="
+echo [可选] 是否加载历史存档？
+echo.
+choice /c YN /m "是否加载存档?  "
+if errorlevel 2 (
+    echo [信息] 将启动新会话
+) else (
+    if exist "logs\" (
+        echo.
+        echo 可用的存档文件:
+        dir /b logs\*.json 2>nul
+        echo.
+        echo 请输入存档文件完整路径（可拖拽文件到此处，直接回车则不加载）:
+        set /p "ARCHIVE_PATH="
+        rem 注意：这里必须启用延迟扩展或在外部使用
+    ) else (
+        echo [信息] logs目录不存在，无法加载存档
+    )
+)
+
+:: 单独处理存档路径（不能放在上面的括号里）
+if defined ARCHIVE_PATH (
+    set "ARCHIVE_ARG=%ARCHIVE_PATH%"
+    echo [信息] 将加载存档: !ARCHIVE_ARG!
+) else (
+    echo [信息] 将启动新会话
+)
+echo.
+
 :: 显示启动信息
 echo [4/4] 准备启动程序...
 echo.
@@ -102,8 +133,17 @@ echo [提示] 首次运行会自动进入配置向导，请按提示完成设置
 echo [提示] 程序运行中可随时按 Q 键退出
 echo.
 
-:: 运行主程序
-python -u PaperAiChat.py
+:: 启用延迟扩展，以便在条件语句中使用变量
+setlocal enabledelayedexpansion
+
+:: 运行主程序（带存档参数）
+if defined ARCHIVE_ARG (
+    echo [信息] 执行命令: python -u PaperAiChat.py "!ARCHIVE_ARG!"
+    python -u PaperAiChat.py "!ARCHIVE_ARG!"
+) else (
+    echo [信息] 执行命令: python -u PaperAiChat.py
+    python -u PaperAiChat.py
+)
 
 :: 检查运行结果
 if errorlevel 1 (

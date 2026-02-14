@@ -18,10 +18,11 @@ import math
 import schedule
 
 class EasyOCRChatBot:
-    """EasyOCR版聊天机器人"""
+    """EasyOCR版聊天机器人 - 含存档恢复功能"""
     
-    def __init__(self, config_path="config.json"):
+    def __init__(self, config_path="config.json", archive_path=None):
         self.config_path = os.path.abspath(config_path)
+        self.archive_path = archive_path
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_dir = Path("logs")
         self.log_dir.mkdir(exist_ok=True)
@@ -48,17 +49,24 @@ class EasyOCRChatBot:
             base_url=self.config['api_url']
         )
         
-        # 状态变量
-        self.last_message_hash = ""
-        self.conversation_history = []
-        self.message_count = 0
-        self.error_count = 0
-        self.null_response_count = 0
-        self.start_time = time.time()
-        self.total_typed_chars = 0
-        self.total_typing_time = 0
-        self.avg_response_time = 0
-        self.response_times = []
+        # 状态变量（如果提供了存档则从存档加载，否则初始化为空）
+        if self.archive_path and os.path.exists(self.archive_path):
+            self.load_archive(self.archive_path)
+        else:
+            self.conversation_history = []
+            self.message_count = 0
+            self.error_count = 0
+            self.null_response_count = 0
+            self.total_typed_chars = 0
+            self.total_typing_time = 0
+            self.avg_response_time = 0
+            self.response_times = []
+            self.last_message_hash = ""
+            self.last_active_message_time = 0
+            self.active_message_count = 0
+            self.daily_active_count = 0
+            self.last_user_message_time = time.time()
+            self.last_reset_date = datetime.now().date()
         
         # 人性化模拟参数
         self.user_typing_speed = random.uniform(3, 6)
@@ -66,14 +74,9 @@ class EasyOCRChatBot:
         self.last_response_time = 0
         self.consecutive_fast_responses = 0
         
-        # 主动消息相关
-        self.last_active_message_time = time.time()
-        self.active_message_count = 0
-        self.conversation_start_time = time.time()
-        self.last_user_message_time = time.time()
-        self.user_inactive_duration = 0
-        self.daily_active_count = 0
-        self.last_reset_date = datetime.now().date()
+        # 会话开始时间（重置为当前时间，不保存存档中的）
+        self.start_time = time.time()
+        self.conversation_start_time = self.start_time
 
         # 尝试导入 pyperclipimg
         try:
@@ -98,6 +101,8 @@ class EasyOCRChatBot:
         self.log_info(f"配置文件路径: {self.config_path}", category="CONFIG")
         self.log_info(f"对话节奏: {self.conversation_pace}", category="HUMAN")
         self.log_info(f"主动消息间隔: {self.config.get('active_message_min_interval', 300)}-{self.config.get('active_message_max_interval', 1800)}秒", category="ACTIVE")
+        if self.archive_path:
+            self.log_info(f"已从存档恢复: {self.archive_path}", category="ARCHIVE")
     
     def init_logging(self):
         """初始化日志系统"""
@@ -107,6 +112,8 @@ class EasyOCRChatBot:
             f.write(f"Python版本: {sys.version}\n")
             f.write(f"EasyOCR版本: {easyocr.__version__}\n")
             f.write(f"配置文件: {self.config_path}\n")
+            if hasattr(self, 'archive_path') and self.archive_path:
+                f.write(f"加载存档: {self.archive_path}\n")
             f.write(f"{'='*60}\n\n")
     
     def log(self, level, message, category="GENERAL"):
@@ -893,7 +900,7 @@ class EasyOCRChatBot:
             elapsed = (time.time() - start_time) * 1000
             reply = response.choices[0].message.content
             
-            # 【新增】处理空行转换为分隔符
+            # 处理空行转换为分隔符
             original_reply = reply
             reply = self.convert_empty_lines_to_delimiter(reply)
             
@@ -916,6 +923,12 @@ class EasyOCRChatBot:
             max_history = self.config['max_history']
             if len(self.conversation_history) > max_history * 2:
                 self.conversation_history = self.conversation_history[-max_history*2:]
+            
+            # 记录响应时间
+            self.response_times.append(elapsed / 1000)
+            if len(self.response_times) > 10:
+                self.response_times.pop(0)
+            self.avg_response_time = sum(self.response_times) / len(self.response_times)
             
             return reply
             
@@ -1084,7 +1097,7 @@ class EasyOCRChatBot:
         """打印帮助信息"""
         help_text = (
             f"\n{'='*60}\n"
-            f"人性化命令帮助\n"
+            f"命令帮助\n"
             f"{'='*60}\n"
             f"[Pause/F8]      切换暂停/继续\n"
             f"[Ctrl+P]        强制暂停\n"
@@ -1104,6 +1117,109 @@ class EasyOCRChatBot:
             f"{'='*60}\n"
         )
         print(help_text)
+    
+    def save_archive(self):
+        """保存对话存档到logs目录，文件名格式：{提示词文件名}_{时间}.json"""
+        try:
+            # 获取提示词文件名（不含路径和扩展名）
+            prompt_name = "default"
+            if self.config.get('prompt_file'):
+                prompt_name = os.path.splitext(os.path.basename(self.config['prompt_file']))[0]
+            elif self.config.get('system_prompt'):
+                # 取系统提示词前10个字符作为文件名的一部分（去除空格）
+                prompt_name = self.config['system_prompt'][:10].replace(' ', '_')
+            
+            # 生成时间戳
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_filename = f"{prompt_name}_{timestamp}.json"
+            archive_path = self.log_dir / archive_filename
+            
+            # 准备存档数据
+            archive_data = {
+                "version": "1.0",
+                "saved_at": datetime.now().isoformat(),
+                "config_snapshot": {
+                    "api_url": self.config.get('api_url'),
+                    "model_name": self.config.get('model_name'),
+                    "prompt_file": self.config.get('prompt_file'),
+                    "system_prompt": self.config.get('system_prompt'),
+                    "segment_delimiter": self.config.get('segment_delimiter')
+                },
+                "state": {
+                    "conversation_history": self.conversation_history,
+                    "message_count": self.message_count,
+                    "active_message_count": self.active_message_count,
+                    "daily_active_count": self.daily_active_count,
+                    "last_active_message_time": self.last_active_message_time,
+                    "last_user_message_time": self.last_user_message_time,
+                    "last_message_hash": self.last_message_hash,
+                    "total_typed_chars": self.total_typed_chars,
+                    "total_typing_time": self.total_typing_time,
+                    "avg_response_time": self.avg_response_time,
+                    "response_times": self.response_times,
+                    "null_response_count": self.null_response_count,
+                    "error_count": self.error_count,
+                    "last_reset_date": self.last_reset_date.isoformat() if hasattr(self, 'last_reset_date') else None
+                }
+            }
+            
+            with open(archive_path, 'w', encoding='utf-8') as f:
+                json.dump(archive_data, f, ensure_ascii=False, indent=2)
+            
+            self.log_info(f"对话存档已保存: {archive_path}", category="ARCHIVE")
+            return str(archive_path)
+        except Exception as e:
+            self.log_error(f"保存存档失败: {e}", category="ARCHIVE")
+            return None
+    
+    def load_archive(self, archive_path):
+        """从存档文件加载对话状态"""
+        try:
+            with open(archive_path, 'r', encoding='utf-8') as f:
+                archive_data = json.load(f)
+            
+            state = archive_data.get('state', {})
+            self.conversation_history = state.get('conversation_history', [])
+            self.message_count = state.get('message_count', 0)
+            self.active_message_count = state.get('active_message_count', 0)
+            self.daily_active_count = state.get('daily_active_count', 0)
+            self.last_active_message_time = state.get('last_active_message_time', 0)
+            self.last_user_message_time = state.get('last_user_message_time', time.time())
+            self.last_message_hash = state.get('last_message_hash', "")
+            self.total_typed_chars = state.get('total_typed_chars', 0)
+            self.total_typing_time = state.get('total_typing_time', 0)
+            self.avg_response_time = state.get('avg_response_time', 0)
+            self.response_times = state.get('response_times', [])
+            self.null_response_count = state.get('null_response_count', 0)
+            self.error_count = state.get('error_count', 0)
+            
+            # 恢复 last_reset_date，如果不存在则设为今天
+            last_reset_str = state.get('last_reset_date')
+            if last_reset_str:
+                self.last_reset_date = datetime.fromisoformat(last_reset_str).date()
+            else:
+                self.last_reset_date = datetime.now().date()
+            
+            self.log_info(f"已从存档恢复: {archive_path}", category="ARCHIVE")
+            self.log_info(f"恢复对话历史: {len(self.conversation_history)} 条消息", category="ARCHIVE")
+            
+        except Exception as e:
+            self.log_error(f"加载存档失败: {e}", category="ARCHIVE")
+            # 如果加载失败，初始化为空状态
+            self.conversation_history = []
+            self.message_count = 0
+            self.active_message_count = 0
+            self.daily_active_count = 0
+            self.last_active_message_time = 0
+            self.last_user_message_time = time.time()
+            self.last_message_hash = ""
+            self.total_typed_chars = 0
+            self.total_typing_time = 0
+            self.avg_response_time = 0
+            self.response_times = []
+            self.null_response_count = 0
+            self.error_count = 0
+            self.last_reset_date = datetime.now().date()
     
     def run(self):
         """主运行循环"""
@@ -1193,11 +1309,14 @@ class EasyOCRChatBot:
             self.cleanup()
     
     def cleanup(self):
-        """清理资源"""
+        """清理资源，退出前保存存档"""
         self.running = False
         self.pause_event.set()
         
         self.log_info("正在清理资源...", category="MAIN")
+        
+        # 保存存档
+        self.save_archive()
         
         elapsed = time.time() - self.start_time
         avg_speed = self.total_typed_chars / self.total_typing_time if self.total_typing_time > 0 else 0
@@ -1230,9 +1349,15 @@ class EasyOCRChatBot:
 def main():
     """主函数"""
     print("="*60)
-    print(" PaperAiChat 聊天机器人 v6.0")
-    print(" 人性化模拟 | 主动消息 | 智能节奏控制")
+    print(" PaperAiChat 聊天机器人 v7.0")
+    print(" 人性化模拟 | 主动消息 | 存档恢复")
     print("="*60)
+    
+    # 解析命令行参数
+    archive_path = None
+    if len(sys.argv) > 1:
+        archive_path = sys.argv[1]
+        print(f"[信息] 将加载存档: {archive_path}")
     
     # 检查依赖
     try:
@@ -1257,8 +1382,8 @@ def main():
     # 配置文件路径
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
     
-    # 启动机器人
-    bot = EasyOCRChatBot(config_path)
+    # 启动机器人，传入存档路径
+    bot = EasyOCRChatBot(config_path, archive_path=archive_path)
     
     try:
         bot.run()

@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "saved_at": "2026-02-14T15:56:24.650128",
+  "config": {
+    "api_url": "https://api.deepseek.com",
+    "model_name": "deepseek-chat",
+    "prompt_file": "C:\\Users\\colas\\Documents\\code\\PaperAiChat\\1.txt",
+    "system_prompt": null,
+    "segment_delimiter": "||"
+  },
+  "state": {
+    "conversation_history": [
+      {
+        "role": "assistant",
+        "content": "今天看到路边有只流浪猫，毛色特别漂亮，可惜它很怕人。"
+      }
+    ],
+    "message_count": 1,
+    "active_message_count": 1,
+    "daily_active_count": 1,
+    "last_active_message_time": 1771055747.8669,
+    "last_user_message_time": 0,
+    "last_message_hash": "",
+    "total_typed_chars": 26,
+    "total_typing_time": 5.54340320670436,
+    "avg_response_time": 0,
+    "response_times": [],
+    "null_response_count": 0,
+    "error_count": 0
+  }
+}
