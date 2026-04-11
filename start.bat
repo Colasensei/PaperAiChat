@@ -98,20 +98,37 @@ if errorlevel 2 (
         dir /b logs\*.json 2>nul
         echo.
         echo 请输入存档文件完整路径（可拖拽文件到此处，直接回车则不加载）:
-        set /p "ARCHIVE_PATH="
+        set /p "ARCHIVE_PATH=%CD%\logs\"
         rem 注意：这里必须启用延迟扩展或在外部使用
     ) else (
         echo [信息] logs目录不存在，无法加载存档
     )
 )
 
-:: 单独处理存档路径（不能放在上面的括号里）
+:: 单独处理存档路径（只能从程序目录下的logs文件夹加载）
 if defined ARCHIVE_PATH (
-    set "ARCHIVE_ARG=%ARCHIVE_PATH%"
-    echo [信息] 将加载存档: !ARCHIVE_ARG!
+    rem 去除可能存在的引号和前后空格
+    set "ARCHIVE_PATH=!ARCHIVE_PATH:"=!"
+    
+    rem 构建正确的路径：程序目录\logs\文件名
+    set "ARCHIVE_ARG=%SCRIPT_DIR%logs\!ARCHIVE_PATH!"
+    
+    rem 如果输入的是完整路径，提取文件名
+    for %%a in ("!ARCHIVE_PATH!") do set "ARCHIVE_FILENAME=%%~nxa"
+    set "ARCHIVE_ARG=%SCRIPT_DIR%logs\!ARCHIVE_FILENAME!"
+    
+    rem 检查文件是否存在
+    if exist "!ARCHIVE_ARG!" (
+        echo [信息] 将加载存档: !ARCHIVE_ARG!
+    ) else (
+        echo [警告] 存档文件不存在: !ARCHIVE_ARG!
+        set "ARCHIVE_ARG="
+        echo [信息] 将启动新会话
+    )
 ) else (
     echo [信息] 将启动新会话
 )
+
 echo.
 
 :: 显示启动信息
@@ -122,7 +139,7 @@ echo.
 choice /c YN /m "是否立即启动 ? "
 if errorlevel 2 (
     echo.
-    echo 已取消启动
+    echo 已取消启动今天
     pause
     exit /b 0
 )
@@ -137,9 +154,19 @@ echo.
 setlocal enabledelayedexpansion
 
 :: 运行主程序（带存档参数）
-if defined ARCHIVE_ARG (
-    echo [信息] 执行命令: python -u PaperAiChat.py "!ARCHIVE_ARG!"
-    python -u PaperAiChat.py "!ARCHIVE_ARG!"
+if defined ARCHIVE_PATH (
+    rem 构建正确的存档路径：程序目录\logs\文件名
+    for %%a in ("%ARCHIVE_PATH%") do set "ARCHIVE_FILENAME=%%~nxa"
+    set "ARCHIVE_ARG=%SCRIPT_DIR%logs\%ARCHIVE_FILENAME%"
+    
+    if exist "!ARCHIVE_ARG!" (
+        echo [信息] 将加载存档: !ARCHIVE_ARG!
+        python -u PaperAiChat.py "!ARCHIVE_ARG!"
+    ) else (
+        echo [错误] 存档文件不存在: !ARCHIVE_ARG!
+        echo [信息] 将启动新会话
+        python -u PaperAiChat.py
+    )
 ) else (
     echo [信息] 执行命令: python -u PaperAiChat.py
     python -u PaperAiChat.py
