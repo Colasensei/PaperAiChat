@@ -1,1 +1,1 @@
-ver
+VERSION = 8.2.0
