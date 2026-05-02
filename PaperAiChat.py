@@ -1,3 +1,4 @@
+VERSION = "8.2.0" 
 import easyocr
 import pyautogui
 import pyperclip
@@ -261,6 +262,7 @@ class EasyOCRChatBot:
         with open(self.log_file, 'w', encoding='utf-8') as f:
             f.write(f"{'='*60}\n")
             f.write(f"会话开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"PaperAiChat 版本: {VERSION}\n")  
             f.write(f"Python版本: {sys.version}\n")
             f.write(f"EasyOCR版本: {easyocr.__version__}\n")
             f.write(f"配置文件: {self.config_path}\n")
@@ -1341,6 +1343,7 @@ class EasyOCRChatBot:
             f"\n{'='*60}\n"
             f"运行状态\n"
             f"{'='*60}\n"
+            f"(PaperAiChat v{VERSION})\n"  
             f"运行时间: {hours:02d}:{minutes:02d}:{seconds:02d}\n"
             f"系统状态: {'暂停中' if self.paused else '运行中'}\n"
             f"睡眠状态: {'睡眠中' if self.is_sleeping() else '清醒'}\n"
@@ -1419,6 +1422,7 @@ class EasyOCRChatBot:
             archive_path = self.log_dir / archive_filename
             archive_data = {
                 "version": "1.0",
+                "paperaichat_version": VERSION,  
                 "saved_at": datetime.now().isoformat(),
                 "config_snapshot": {
                     "api_url": self.config.get('api_url'),
@@ -1603,7 +1607,7 @@ class EasyOCRChatBot:
 
 def main():
     print("="*60)
-    print(" PaperAiChat 聊天机器人 v8.0")
+    print(" PaperAiChat 聊天机器人 版本"+VERSION)
     print(" 人性化模拟 | 主动消息 | 存档恢复 | 睡眠模式 | 指令系统")
     print("="*60)
     archive_path = None
