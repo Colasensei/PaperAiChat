@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PaperAiChat 控制面板</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="logo">PaperAiChat</span>
+            <span class="version" id="versionTag">v--</span>
+        </div>
+        <div class="topbar-center">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">连接中...</span>
+            <span class="uptime" id="uptimeDisplay">--</span>
+        </div>
+        <div class="topbar-right">
+            <span class="session-id" id="sessionId">--</span>
+        </div>
+    </header>
+
+    <!-- 主布局 -->
+    <div class="main-container">
+        <!-- 左侧面板 -->
+        <aside class="sidebar">
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" data-tab="overview">总览</button>
+                <button class="nav-btn" data-tab="api">API 性能</button>
+                <button class="nav-btn" data-tab="logs">实时日志</button>
+                <button class="nav-btn" data-tab="messages">消息记录</button>
+                <button class="nav-btn" data-tab="config">配置管理</button>
+            </nav>
+        </aside>
+
+        <!-- 右侧内容区 -->
+        <main class="content">
+            <!-- ========== 总览面板 ========== -->
+            <section class="tab-panel active" id="panel-overview">
+                <!-- 操作区 -->
+                <div class="action-box glass">
+                    <div class="action-box-title">操作区</div>
+                    <div class="action-bar">
+                        <button class="btn btn-warning" id="btnPause" onclick="sendCommand('pause')">
+                            <span id="btnPauseText">暂停</span>
+                        </button>
+                        <button class="btn btn-info" id="btnSleep" onclick="sendCommand('sleep')">
+                            立即入睡
+                        </button>
+                        <button class="btn btn-success" id="btnActive" onclick="sendCommand('active')">
+                            强制主动消息
+                        </button>
+                        <button class="btn btn-accent" id="btnStatus" onclick="sendCommand('state')">
+                            发送状态
+                        </button>
+                        <button class="btn btn-danger" id="btnToggleCmd" onclick="sendCommand('toggle_cmd')">
+                            切换指令
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 状态卡片 -->
+                <div class="stats-grid">
+                    <div class="stat-card glass running">
+                        <div class="stat-value" id="statUptime">--</div>
+                        <div class="stat-label">运行时长</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statMessages">0</div>
+                        <div class="stat-label">消息处理</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statActive">0</div>
+                        <div class="stat-label">今日主动</div>
+                    </div>
+                    <div class="stat-card glass error">
+                        <div class="stat-value" id="statErrors">0</div>
+                        <div class="stat-label">错误计数</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statTyped">0</div>
+                        <div class="stat-label">输入字符</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statAvgSpeed">0 <small>字/秒</small></div>
+                        <div class="stat-label">平均打字速度</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statAvgResponse">0 <small>秒</small></div>
+                        <div class="stat-label">平均响应时间</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="statApiCalls">0</div>
+                        <div class="stat-label">API 调用</div>
+                    </div>
+                    <div class="stat-card glass token-card">
+                        <div class="stat-value" id="statTotalTokens">0</div>
+                        <div class="stat-label">总消耗 Token</div>
+                    </div>
+                </div>
+
+                <!-- 图表区：左侧图表 + 右侧日志 -->
+                <div class="overview-bottom">
+                    <div class="overview-charts">
+                        <div class="chart-container glass">
+                            <h3 class="chart-title">API 响应时间趋势 (最近20次)</h3>
+                            <canvas id="chartResponseTime"></canvas>
+                        </div>
+                        <div class="chart-container glass">
+                            <h3 class="chart-title">打字与消息统计</h3>
+                            <canvas id="chartTyping"></canvas>
+                        </div>
+                    </div>
+                    <div class="overview-log glass">
+                        <h3 class="chart-title">实时日志</h3>
+                        <div class="log-mini" id="logMini">
+                            <div class="log-empty">等待日志数据...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== API 性能面板 ========== -->
+            <section class="tab-panel" id="panel-api">
+                <div class="stats-grid">
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiTotalCalls">0</div>
+                        <div class="stat-label">总调用次数</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiTotalTokens">0</div>
+                        <div class="stat-label">总 Token 数</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiAvgLatency">0 <small>ms</small></div>
+                        <div class="stat-label">平均延迟</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiLastLatency">0 <small>ms</small></div>
+                        <div class="stat-label">最近延迟</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiLastTokens">0</div>
+                        <div class="stat-label">最近 Token</div>
+                    </div>
+                    <div class="stat-card glass">
+                        <div class="stat-value" id="apiLastCall">--</div>
+                        <div class="stat-label">最近调用</div>
+                    </div>
+                </div>
+
+                <div class="chart-container glass">
+                    <h3 class="chart-title">API 延迟分布</h3>
+                    <canvas id="chartApiLatency"></canvas>
+                </div>
+                <div class="chart-container glass">
+                    <h3 class="chart-title">Token 消耗趋势</h3>
+                    <canvas id="chartTokens"></canvas>
+                </div>
+            </section>
+
+            <!-- ========== 实时日志面板 ========== -->
+            <section class="tab-panel" id="panel-logs">
+                <div class="log-controls">
+                    <select id="logFilter" onchange="filterLogs()">
+                        <option value="ALL">全部级别</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="DEBUG">DEBUG</option>
+                    </select>
+                    <button class="btn btn-sm" onclick="clearLogs()">清空</button>
+                    <span class="log-count" id="logCount">0 条</span>
+                </div>
+                <div class="log-container glass" id="logContainer">
+                    <div class="log-empty">等待日志数据...</div>
+                </div>
+            </section>
+
+            <!-- ========== 消息记录面板 ========== -->
+            <section class="tab-panel" id="panel-messages">
+                <div class="message-container glass" id="messageContainer">
+                    <div class="log-empty">等待消息数据...</div>
+                </div>
+            </section>
+
+            <!-- ========== 配置管理面板 ========== -->
+            <section class="tab-panel" id="panel-config">
+                <div class="config-container glass">
+                    <div class="config-notice">
+                        修改配置后需重启程序生效。API Key 将加密存储。
+                    </div>
+                    <form id="configForm" class="config-form">
+                        <fieldset>
+                            <legend>API 设置</legend>
+                            <div class="form-row">
+                                <label>API Key</label>
+                                <input type="password" id="cfgApiKey" placeholder="sk-..." autocomplete="off">
+                                <button type="button" class="btn btn-sm" onclick="toggleApiKey()">显示</button>
+                            </div>
+                            <div class="form-row">
+                                <label>API URL</label>
+                                <input type="text" id="cfgApiUrl" value="https://api.deepseek.com">
+                            </div>
+                            <div class="form-row">
+                                <label>模型名称</label>
+                                <input type="text" id="cfgModel" value="deepseek-chat">
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend>对话设置</legend>
+                            <div class="form-row">
+                                <label>对话节奏</label>
+                                <select id="cfgPace">
+                                    <option value="快速">快速</option>
+                                    <option value="平衡" selected>平衡</option>
+                                    <option value="慢速">慢速</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label>最大历史</label>
+                                <input type="number" id="cfgMaxHistory" value="30" min="1" max="100">
+                            </div>
+                            <div class="form-row">
+                                <label>检查间隔(秒)</label>
+                                <input type="number" id="cfgInterval" value="1.0" min="0.1" max="10" step="0.1">
+                            </div>
+                            <div class="form-row">
+                                <label>打字速度(最小)</label>
+                                <input type="number" id="cfgSpeedMin" value="3" min="1" max="30">
+                            </div>
+                            <div class="form-row">
+                                <label>打字速度(最大)</label>
+                                <input type="number" id="cfgSpeedMax" value="8" min="1" max="50">
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend>主动消息</legend>
+                            <div class="form-row">
+                                <label>频率(次/小时)</label>
+                                <input type="number" id="cfgActiveFreq" value="1.0" min="0" max="5" step="0.1">
+                            </div>
+                            <div class="form-row">
+                                <label>每日最大数</label>
+                                <input type="number" id="cfgMaxDaily" value="25" min="0" max="100">
+                            </div>
+                            <div class="form-row">
+                                <label>冷却时间(秒)</label>
+                                <input type="number" id="cfgCooldown" value="300" min="30" max="3600">
+                            </div>
+                        </fieldset>
+                        <button type="submit" class="btn btn-success btn-lg">保存配置</button>
+                    </form>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

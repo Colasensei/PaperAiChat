@@ -1,5 +1,4 @@
-VERSION = "8.2.0" 
-import easyocr
+VERSION = "8.3.0"
 import pyautogui
 import pyperclip
 import time
@@ -8,17 +7,16 @@ import os
 import sys
 import hashlib
 import random
+import threading
+import re
 from datetime import datetime, timedelta
 from openai import OpenAI
 import numpy as np
 from PIL import Image
 from pathlib import Path
-import threading
 import keyboard
-import math
-import schedule
-import re
 from paddleocr import PaddleOCR
+from baidu_search import baidu_search, format_search_results
 
 class EasyOCRChatBot:
     """EasyOCR版聊天机器人 - 含存档恢复功能"""
@@ -151,6 +149,10 @@ class EasyOCRChatBot:
         # 主动消息发送标志，用于避免与主循环冲突
         self.sending_active = False
 
+        # Web 仪表盘默认值（加载配置前设好，防止 log 方法报 AttributeError）
+        self.web_enabled = False
+        self._web_dashboard = None
+
         # 加载配置
         self.config = self.load_config()
 
@@ -191,7 +193,7 @@ class EasyOCRChatBot:
         self.cmd_disabled = False
 
         # 初始化OCR
-        self.reader = self.init_ocr()
+        self.init_ocr()
 
         # 初始化API客户端
         self.client = OpenAI(
@@ -243,6 +245,12 @@ class EasyOCRChatBot:
         self.config.setdefault('enable_emoticon', True)
         self.config.setdefault('emoticon_folder', 'Emoticon')
 
+        # Issues 系统配置
+        self.issues_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "issues.json")
+        self._init_issues_file()
+        self.last_issues_mtime = 0
+        self._pending_issues_to_check = False
+
         # 启动线程
         self.command_thread = threading.Thread(target=self.command_listener, daemon=True)
         self.command_thread.start()
@@ -250,6 +258,9 @@ class EasyOCRChatBot:
         self.active_message_thread.start()
         self.sleep_monitor_thread = threading.Thread(target=self.sleep_monitor, daemon=True)
         self.sleep_monitor_thread.start()
+        # Issues 发送监控线程
+        self.issues_sender_thread = threading.Thread(target=self._issues_sender_loop, daemon=True)
+        self.issues_sender_thread.start()
 
         self.log_info("系统初始化完成", category="INIT")
         self.log_info(f"配置文件路径: {self.config_path}", category="CONFIG")
@@ -258,13 +269,18 @@ class EasyOCRChatBot:
         if self.archive_path:
             self.log_info(f"已从存档恢复: {self.archive_path}", category="ARCHIVE")
 
+        # 初始化 Web 仪表盘
+        self.web_enabled = self.config.get('web_dashboard', {}).get('enabled', True)
+        self.web_port = self.config.get('web_dashboard', {}).get('port', 5888)
+        self._init_web_dashboard()
+
     def init_logging(self):
         with open(self.log_file, 'w', encoding='utf-8') as f:
             f.write(f"{'='*60}\n")
             f.write(f"会话开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"PaperAiChat 版本: {VERSION}\n")  
             f.write(f"Python版本: {sys.version}\n")
-            f.write(f"EasyOCR版本: {easyocr.__version__}\n")
+            f.write(f"PaddleOCR 已加载\n")
             f.write(f"配置文件: {self.config_path}\n")
             if hasattr(self, 'archive_path') and self.archive_path:
                 f.write(f"加载存档: {self.archive_path}\n")
@@ -276,6 +292,8 @@ class EasyOCRChatBot:
         print(log_entry)
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(log_entry + "\n")
+        # 推送到 Web 仪表盘
+        self._push_log_to_web(timestamp, level, category, message)
 
     def log_info(self, message, category="GENERAL"):
         self.log("INFO", message, category)
@@ -290,6 +308,101 @@ class EasyOCRChatBot:
     def log_debug(self, message, category="DEBUG"):
         if self.config.get('debug_mode', False):
             self.log("DEBUG", message, category)
+
+    # ======================= Web 仪表盘 =======================
+    def _init_web_dashboard(self):
+        """初始化 Web 仪表盘（后台线程）"""
+        if not self.web_enabled:
+            self.log_info("Web 仪表盘已禁用", category="WEB")
+            return
+        try:
+            from web_dashboard import dashboard, set_command_callback, start_server_thread
+            self._web_dashboard = dashboard
+            self._web_dashboard.version = VERSION
+            self._web_dashboard.session_id = self.session_id
+            self._web_dashboard.start_time = self.start_time
+
+            # 注册指令回调
+            set_command_callback(self._handle_web_command)
+
+            # 启动服务
+            start_server_thread(port=self.web_port)
+            self.log_info(f"Web 仪表盘已启动: http://127.0.0.1:{self.web_port}", category="WEB")
+        except ImportError as e:
+            self.log_warning(f"Web 仪表盘依赖缺失 (flask-socketio): {e}", category="WEB")
+            self.web_enabled = False
+        except Exception as e:
+            self.log_error(f"Web 仪表盘启动失败: {e}", category="WEB")
+            self.web_enabled = False
+
+    def _push_log_to_web(self, timestamp, level, category, message):
+        """推送日志到 Web 仪表盘"""
+        if not self.web_enabled or not hasattr(self, '_web_dashboard'):
+            return
+        try:
+            short_ts = timestamp[-12:] if len(timestamp) > 12 else timestamp
+            self._web_dashboard.add_log(short_ts, level, category, message)
+        except Exception:
+            pass
+
+    def _push_message_to_web(self, role, content):
+        """推送消息到 Web 仪表盘"""
+        if not self.web_enabled or not hasattr(self, '_web_dashboard'):
+            return
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._web_dashboard.add_message(ts, role, content)
+        except Exception:
+            pass
+
+    def _sync_web_stats(self):
+        """同步统计数据到 Web 仪表盘"""
+        if not self.web_enabled or not hasattr(self, '_web_dashboard'):
+            return
+        try:
+            self._web_dashboard.update_stats(self)
+        except Exception:
+            pass
+
+    def _record_api_stats(self, latency_ms, tokens):
+        """记录 API 调用统计到 Web 仪表盘"""
+        if not self.web_enabled or not hasattr(self, '_web_dashboard'):
+            return
+        try:
+            self._web_dashboard.record_api_call(latency_ms, tokens)
+        except Exception:
+            pass
+
+    def _handle_web_command(self, cmd, args):
+        """处理来自 Web 仪表盘的指令"""
+        if cmd == "pause":
+            self.paused = not self.paused
+            if self.paused:
+                self.pause_event.clear()
+                self.log_info("Web 面板: 系统已暂停", category="WEB")
+                return "系统已暂停"
+            else:
+                self.pause_event.set()
+                self.log_info("Web 面板: 系统已继续", category="WEB")
+                return "系统已继续运行"
+        elif cmd == "sleep":
+            self.go_to_sleep(hours=args.get('hours'))
+            return "已进入睡眠模式"
+        elif cmd == "active":
+            if self.is_sleeping():
+                return "睡眠中，无法发送主动消息"
+            self.force_active_message()
+            return "已触发主动消息"
+        elif cmd == "state":
+            self.direct_send_status()
+            return "状态已发送到聊天窗口"
+        elif cmd == "toggle_cmd":
+            self.cmd_disabled = not self.cmd_disabled
+            status = "禁用" if self.cmd_disabled else "启用"
+            self.log_info(f"Web 面板: 指令识别已{status}", category="WEB")
+            return f"指令识别已{status}"
+        else:
+            return f"未知指令: {cmd}"
 
     def wait_if_paused(self):
         while self.paused and self.running:
@@ -576,31 +689,9 @@ class EasyOCRChatBot:
         help_text += f"  {self.cmd_prefix}help - 显示本帮助\n"
         self.direct_send_message(help_text)
 
-    def go_to_sleep(self, hours=None):
-        if hours is not None:
-            self.sleep_until = datetime.now() + timedelta(hours=hours)
-            self.is_asleep = True
-            self.log_info(f"主动进入睡眠模式，持续 {hours} 小时", category="SLEEP")
-            self.send_message_human_like([f"好的，我去休息 {hours} 小时。有急事再叫我~"])
-        else:
-            if self.sleep_enabled and hasattr(self, 'sleep_start_time'):
-                self.sleep_until = self.sleep_start_time
-                self.is_asleep = True
-                self.log_info("主动进入睡眠模式，按当日计划入睡", category="SLEEP")
-                self.send_message_human_like(["我去睡觉啦，明天见~"])
-            else:
-                self.send_message_human_like(["睡眠模式未配置，无法主动入睡。"])
-
-    def send_help_message(self):
-        help_text = "可用指令：\n"
-        help_text += f"  {self.cmd_prefix}state - 显示运行状态\n"
-        help_text += f"  {self.cmd_prefix}active - 强制发送主动消息\n"
-        help_text += f"  {self.cmd_prefix}sleep [小时] - 立即入睡（可选小时数）\n"
-        help_text += f"  {self.cmd_prefix}pause - 切换暂停/继续\n"
-        help_text += f"  {self.cmd_prefix}help - 显示本帮助\n"
-        if self.cmd_tokens:
-            help_text += f"  指令后需附带权限令牌"
-        self.send_message_human_like([help_text])
+    def direct_go_to_sleep(self, hours=None):
+        """指令触发的直接睡眠（不模拟打字）"""
+        self.go_to_sleep(hours)
 
     # ======================= 原有方法（部分有修改） =======================
     def command_listener(self):
@@ -621,16 +712,16 @@ class EasyOCRChatBot:
                         self.pause_event.set()
                         self.log_info("用户强制继续", category="COMMAND")
                     time.sleep(0.5)
-                elif keyboard.is_pressed('s'):
+                elif keyboard.is_pressed('ctrl+s'):
                     self.print_status()
                     time.sleep(0.5)
-                elif keyboard.is_pressed('l'):
+                elif keyboard.is_pressed('ctrl+l'):
                     self.log_info(f"日志文件: {self.log_file}", category="COMMAND")
                     time.sleep(0.5)
-                elif keyboard.is_pressed('a'):
+                elif keyboard.is_pressed('ctrl+a'):
                     self.force_active_message()
                     time.sleep(0.5)
-                elif keyboard.is_pressed('q'):
+                elif keyboard.is_pressed('ctrl+q'):
                     self.log_info("用户请求退出", category="COMMAND")
                     self.running = False
                     self.pause_event.set()
@@ -822,6 +913,9 @@ class EasyOCRChatBot:
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
+                # 自动解密 API Key
+                if config.get('api_key', '').startswith('ENC:'):
+                    config['api_key'] = self._decrypt_api_key(config['api_key'][4:])
                 self.log_info(f"配置文件加载成功: {self.config_path}", category="CONFIG")
                 return config
             except Exception as e:
@@ -830,6 +924,52 @@ class EasyOCRChatBot:
         else:
             self.log_info("未找到配置文件，启动配置向导", category="CONFIG")
             return self.setup_config()
+
+    def _get_machine_id(self):
+        """获取机器标识用于加密"""
+        try:
+            import uuid
+            return str(uuid.getnode())
+        except Exception:
+            return "paperaichat-default-key"
+
+    def _encrypt_api_key(self, plain_text):
+        """简单的 API Key 混淆存储（非强加密，仅防明文泄露）"""
+        if not plain_text:
+            return ""
+        try:
+            key = self._get_machine_id()
+            result = []
+            for i, c in enumerate(plain_text):
+                result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+            return ''.join(result).encode('utf-8').hex()
+        except Exception:
+            return plain_text
+
+    def _decrypt_api_key(self, encrypted_hex):
+        """解密 API Key"""
+        if not encrypted_hex:
+            return ""
+        try:
+            encrypted = bytes.fromhex(encrypted_hex).decode('utf-8')
+            key = self._get_machine_id()
+            result = []
+            for i, c in enumerate(encrypted):
+                result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+            return ''.join(result)
+        except Exception:
+            return ""
+
+    def save_config_encrypted(self, config=None):
+        """保存配置，自动加密 API Key"""
+        if config is None:
+            config = self.config
+        saved_config = dict(config)
+        if saved_config.get('api_key'):
+            saved_config['api_key'] = 'ENC:' + self._encrypt_api_key(saved_config['api_key'])
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(saved_config, f, ensure_ascii=False, indent=2)
+        self.log_info("配置已加密保存", category="CONFIG")
 
     def setup_config(self):
         print("\n" + "="*60)
@@ -971,8 +1111,7 @@ class EasyOCRChatBot:
         else:
             config['time_injection'] = {"enabled": False}
 
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+        self.save_config_encrypted(config)
         self.log_info(f"配置已保存: {self.config_path}", category="CONFIG")
         return config
 
@@ -1014,6 +1153,10 @@ class EasyOCRChatBot:
         if time_injection.get('enabled', False):
             time_str = datetime.now().strftime(time_injection.get('format', "%Y年%m月%d日 %H:%M:%S"))
             base_prompt = f"{base_prompt}\n\n当前时间：{time_str}"
+        # 追加工具调用提示词
+        tools_prompt = self._get_tools_prompt()
+        if tools_prompt:
+            base_prompt = f"{base_prompt}\n\n{tools_prompt}"
         return base_prompt
 
     def init_ocr(self, max_retries=3):
@@ -1034,7 +1177,7 @@ class EasyOCRChatBot:
                 )
                 
                 self.log_info("PaddleOCR 引擎初始化成功", category="OCR")
-                return True
+                return
                 
             except Exception as e:
                 self.log_error(f"OCR 初始化失败: {str(e)}", category="OCR")
@@ -1091,10 +1234,6 @@ class EasyOCRChatBot:
             
             self.log_debug(f"OCR 识别完成: {elapsed:.0f}ms, 共 {len(lines)} 行", category="OCR")
             return text
-            
-        except Exception as e:
-            self.log_error(f"OCR 识别失败: {e}", category="OCR")
-            return ""
             
         except Exception as e:
             self.log_error(f"OCR 识别失败: {e}", category="OCR")
@@ -1246,11 +1385,48 @@ class EasyOCRChatBot:
             )
             elapsed = (time.time() - start_time) * 1000
             reply = response.choices[0].message.content
+            # 解析工具调用（在转换分隔符之前）
+            clean_reply, tool_calls = self._parse_tool_calls(reply)
+
+            # 分离搜索工具调用和其他工具调用
+            search_query = None
+            other_calls = []
+            if tool_calls:
+                for tc in tool_calls:
+                    if tc.get('tool') == 'search_web':
+                        search_query = tc.get('query', '')
+                    else:
+                        other_calls.append(tc)
+
+                self.log_info(f"检测到 {len(tool_calls)} 个工具调用 (搜索: {1 if search_query else 0})", category="TOOL")
+
+            # 先执行非搜索工具调用
+            for tc in other_calls:
+                self._execute_tool_call(tc)
+
+            if search_query:
+                # 执行搜索，然后二次调用 AI
+                self.log_info(f"执行联网搜索: {search_query}", category="SEARCH")
+                reply = self._get_response_with_search(message, search_query)
+
+                # 二次解析新回复中可能的工具调用
+                clean_reply2, more_calls = self._parse_tool_calls(reply)
+                for tc in more_calls:
+                    self._execute_tool_call(tc)
+                reply = clean_reply2 if more_calls else reply
+            else:
+                reply = clean_reply if tool_calls else reply
             original_reply = reply
             reply = self.convert_empty_lines_to_delimiter(reply)
             if original_reply != reply:
                 self.log_info(f"空行转换: 将 {reply.count('||')} 个空行转换为分隔符", category="FORMAT")
             self.log_info(f"API响应: {elapsed:.0f}ms, 长度: {len(reply)}", category="API")
+            # 记录 API 统计到 Web 仪表盘
+            tokens_used = response.usage.total_tokens if hasattr(response, 'usage') and response.usage else len(reply)
+            self._record_api_stats(elapsed, tokens_used)
+            # 推送消息到 Web 仪表盘
+            self._push_message_to_web("user", message)
+            self._push_message_to_web("assistant", reply[:200])
             if self.config.get('ignore_null_response', True) and self.is_null_response(reply):
                 self.null_response_count += 1
                 self.log_info(f"检测到null回复 (总计: {self.null_response_count})", category="API")
@@ -1391,12 +1567,12 @@ class EasyOCRChatBot:
             f"[Pause/F8]      切换暂停/继续\n"
             f"[Ctrl+P]        强制暂停\n"
             f"[Ctrl+R]        强制继续\n"
-            f"[S]             显示运行状态\n"
-            f"[L]             显示日志路径\n"
-            f"[A]             强制发送主动消息\n"
+            f"[Ctrl+S]        显示运行状态\n"
+            f"[Ctrl+L]        显示日志路径\n"
+            f"[Ctrl+A]        强制发送主动消息\n"
+            f"[Ctrl+H]        显示本帮助\n"
             f"[F5]            切换指令识别开关\n"
-            f"[Q]             退出程序\n"
-            f"[H]             显示本帮助\n"
+            f"[Ctrl+Q]        退出程序\n"
             f"{'='*60}\n"
             f"\n当前设置:\n"
             f"对话节奏: {self.config.get('human_pace', '平衡')}\n"
@@ -1409,6 +1585,251 @@ class EasyOCRChatBot:
             f"{'='*60}\n"
         )
         print(help_text)
+
+    # ======================= Issue 系统 =======================
+
+    def _get_tools_prompt(self):
+        """返回工具调用的提示词（写死在程序中）"""
+        return (
+            "## 工具调用\n"
+            "你有以下工具可用，在适当时调用它们。\n"
+            "\n"
+            "### 1. save_issue — 记录 Bug 反馈或功能建议\n"
+            "当用户向你报告 Bug 或提出新功能建议时，请在回复的末尾附加以下格式：\n"
+            "【TOOL_ISSUE】type=类型|content=用户反馈的原始内容|suggestion=你的分析或建议\n"
+            "\n"
+            "其中 type：\n"
+            "  - bug_report   — 用户报告 Bug/问题\n"
+            "  - feature_suggestion — 用户提出新功能/改进建议\n"
+            "\n"
+            "### 2. search_web — 联网搜索\n"
+            "当用户问你需要实时信息（新闻、天气、资料查询等）时，调用此工具搜索互联网。\n"
+            '请在回复中说一句「让我查一下」之类的话，然后在末尾附加：\n'
+            "【TOOL_SEARCH】query=搜索关键词\n"
+            "\n"
+            "程序会执行搜索并将结果返回给你，然后你再基于搜索结果生成最终回复。\n"
+            "\n"
+            "注意：\n"
+            "1. 所有工具标记必须放在回复的最后（所有 || 分段内容之后）\n"
+            "2. 标记内容中不要包含 | 或 = 符号\n"
+            "3. 这些标记不会显示给用户，仅用于程序内部处理\n"
+            "4. 如果用户问的是常识性或不需要搜索的问题，无需调用搜索工具"
+        )
+
+    def _parse_tool_calls(self, text):
+        """解析 AI 回复中的工具调用标记，返回 (清理后的文本, 工具调用列表)"""
+        if not text:
+            return text, []
+
+        tool_calls = []
+        markers = ['【TOOL_ISSUE】', '【TOOL_SEARCH】']
+
+        # 检查是否有任何标记
+        has_marker = False
+        for m in markers:
+            if m in text:
+                has_marker = True
+                break
+        if not has_marker:
+            return text, []
+
+        # 逐行解析
+        lines = text.split('\n')
+        clean_lines = []
+        for line in lines:
+            matched_marker = None
+            for m in markers:
+                if m in line:
+                    matched_marker = m
+                    break
+
+            if matched_marker:
+                idx = line.index(matched_marker)
+                before = line[:idx].strip()
+                if before:
+                    clean_lines.append(before)
+                params_str = line[idx + len(matched_marker):].strip()
+                params = {}
+                for part in params_str.split('|'):
+                    if '=' in part:
+                        key, _, value = part.partition('=')
+                        params[key.strip()] = value.strip()
+
+                if matched_marker == '【TOOL_ISSUE】':
+                    if params.get('type') and params.get('content'):
+                        params['tool'] = 'save_issue'
+                        tool_calls.append(params)
+                elif matched_marker == '【TOOL_SEARCH】':
+                    if params.get('query'):
+                        params['tool'] = 'search_web'
+                        tool_calls.append(params)
+            else:
+                clean_lines.append(line)
+
+        cleaned = '\n'.join(clean_lines).strip()
+        return cleaned, tool_calls
+
+    # ======================= 联网搜索 =======================
+
+    def _execute_search(self, query):
+        """执行百度搜索，返回格式化后的结果文本"""
+        try:
+            results = baidu_search(query, count=5)
+            formatted = format_search_results(results)
+            self.log_info(f"搜索完成: {query} -> {len(results)} 条结果", category="SEARCH")
+            return formatted
+        except Exception as e:
+            self.log_error(f"搜索失败: {e}", category="SEARCH")
+            return f"【搜索出错】{e}"
+
+    def _get_response_with_search(self, original_message, search_query):
+        """执行搜索并二次调用 AI 生成带搜索结果的回复"""
+        try:
+            # 执行搜索
+            search_text = self._execute_search(search_query)
+
+            # 构建二次调用的消息
+            system_prompt = self.get_system_prompt()
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # 添加历史记录
+            for hist in self.conversation_history[-self.config['max_history']:]:
+                messages.append(hist)
+
+            # 添加用户消息和搜索结果
+            messages.append({"role": "user", "content": original_message})
+            messages.append({
+                "role": "system",
+                "content": f"你刚刚调用了联网搜索工具，以下是搜索结果：\n\n{search_text}\n\n请基于以上搜索结果回答用户的问题，语言风格保持不变（用 || 分段、简短自然）。如果搜索结果为空或出错，请如实告知用户。"
+            })
+
+            self.log_debug("发送带搜索结果的二次 API 请求", category="SEARCH")
+            response = self.client.chat.completions.create(
+                model=self.config['model_name'],
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2000,
+                timeout=30
+            )
+
+            reply = response.choices[0].message.content
+            self.log_info(f"搜索回复生成完成: {len(reply)} 字符", category="SEARCH")
+            return reply
+
+        except Exception as e:
+            self.log_error(f"搜索回复生成失败: {e}", category="SEARCH")
+            return f"搜索出错了: {e}"
+
+    def _execute_tool_call(self, tc):
+        """执行工具调用"""
+        tool_type = tc.get('type', '')
+        content = tc.get('content', '')
+        suggestion = tc.get('suggestion', '')
+
+        if tool_type in ('bug_report', 'feature_suggestion'):
+            issue = {
+                "id": int(time.time() * 1000) % 1000000,  # 简单唯一ID
+                "type": tool_type,
+                "content": content,
+                "ai_suggestion": suggestion,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "open",
+                "reply": "",
+                "resolved_at": None,
+                "reply_sent": False
+            }
+            self._append_issue(issue)
+            self.log_info(f"Issue 已保存: [{issue['id']}] {tool_type} - {content[:50]}", category="TOOL")
+        else:
+            self.log_warning(f"未知的工具调用类型: {tool_type}", category="TOOL")
+
+    def _init_issues_file(self):
+        """初始化 issues.json 文件（如果不存在）"""
+        if not os.path.exists(self.issues_file):
+            try:
+                initial_data = {
+                    "issues": [],
+                    "last_modified": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                with open(self.issues_file, 'w', encoding='utf-8') as f:
+                    json.dump(initial_data, f, ensure_ascii=False, indent=2)
+                self.log_info(f"Issues 文件已创建: {self.issues_file}", category="TOOL")
+            except Exception as e:
+                self.log_error(f"创建 issues 文件失败: {e}", category="TOOL")
+
+    def _load_issues(self):
+        """加载 issues.json 文件"""
+        try:
+            with open(self.issues_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data.get('issues', [])
+        except Exception as e:
+            self.log_error(f"加载 issues 文件失败: {e}", category="TOOL")
+            return []
+
+    def _save_issues(self, issues):
+        """保存 issues 列表到文件"""
+        try:
+            data = {
+                "issues": issues,
+                "last_modified": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open(self.issues_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.last_issues_mtime = os.path.getmtime(self.issues_file)
+            self._pending_issues_to_check = True
+        except Exception as e:
+            self.log_error(f"保存 issues 文件失败: {e}", category="TOOL")
+
+    def _append_issue(self, issue):
+        """追加一条新的 issue"""
+        issues = self._load_issues()
+        issues.append(issue)
+        self._save_issues(issues)
+        self.log_info(f"Issue #{issue['id']} 已记录: {issue['content'][:60]}", category="TOOL")
+
+    def _check_and_send_resolved_issues(self):
+        """检查是否有已解决但未发送回复的 issue，发送并标记"""
+        issues = self._load_issues()
+        modified = False
+        for issue in issues:
+            if issue.get('status') in ('resolved', 'notabug') and not issue.get('reply_sent', False):
+                reply = issue.get('reply', '').strip()
+                if reply:
+                    try:
+                        # 构建带上下文的回复消息
+                        issue_type_label = 'Bug反馈' if issue.get('type') == 'bug_report' else '功能建议'
+                        issue_summary = (issue.get('content', '') or '')[:80]
+                        # 格式：对于「内容摘要」(类型)，已做出回复：原始回复
+                        formatted_reply = f"对于「{issue_summary}」({issue_type_label})，已做出回复：{reply}"
+
+                        self.log_info(f"准备发送 Issue #{issue['id']} 的回复: {reply[:60]}", category="TOOL")
+                        # 发送带上下文格式的回复到聊天窗口
+                        self.direct_send_message(formatted_reply)
+                        issue['reply_sent'] = True
+                        modified = True
+                        self.log_info(f"Issue #{issue['id']} 回复已发送", category="TOOL")
+                    except Exception as e:
+                        self.log_error(f"发送 Issue #{issue['id']} 回复失败: {e}", category="TOOL")
+        if modified:
+            self._save_issues(issues)
+
+    def _issues_sender_loop(self):
+        """后台线程：定期检查是否有待发送的 issue 回复"""
+        while self.running:
+            try:
+                self.wait_if_paused()
+                if os.path.exists(self.issues_file):
+                    current_mtime = os.path.getmtime(self.issues_file)
+                    # 文件有变动 或 有待处理项
+                    if (current_mtime != self.last_issues_mtime) or self._pending_issues_to_check:
+                        self._check_and_send_resolved_issues()
+                        self.last_issues_mtime = current_mtime
+                        self._pending_issues_to_check = False
+                time.sleep(15)  # 每15秒检查一次
+            except Exception as e:
+                self.log_error(f"Issues 发送监控异常: {e}", category="TOOL")
+                time.sleep(30)
 
     def save_archive(self):
         try:
@@ -1530,7 +1951,7 @@ class EasyOCRChatBot:
         try:
             while self.running:
                 self.wait_if_paused()
-                if keyboard.is_pressed('h'):
+                if keyboard.is_pressed('ctrl+h'):
                     self.print_help()
                     time.sleep(0.5)
                 screenshot = self.capture_screen_region()
@@ -1566,6 +1987,8 @@ class EasyOCRChatBot:
                         if self.config.get('log_ignored_messages', False):
                             self.log_debug(f"被忽略的消息: {detected_text}", category="FILTER")
                 time.sleep(self.config['check_interval'])
+                # 同步统计到 Web 仪表盘
+                self._sync_web_stats()
         except KeyboardInterrupt:
             self.log_info("用户中断程序", category="MAIN")
         except Exception as e:
@@ -1580,6 +2003,7 @@ class EasyOCRChatBot:
         self.pause_event.set()
         self.log_info("正在清理资源...", category="MAIN")
         self.save_archive()
+        self.save_config_encrypted()
         elapsed = time.time() - self.start_time
         avg_speed = self.total_typed_chars / self.total_typing_time if self.total_typing_time > 0 else 0
         self.log_info(f"总运行时间: {elapsed:.1f}秒", category="STATS")
@@ -1615,11 +2039,11 @@ def main():
         archive_path = sys.argv[1]
         print(f"[信息] 将加载存档: {archive_path}")
     try:
-        import easyocr, pyautogui, pyperclip, keyboard, openai, PIL, numpy
+        import pyautogui, pyperclip, keyboard, openai, PIL, numpy, paddleocr
     except ImportError as e:
         print(f"[FATAL] 依赖库缺失: {e}")
         print("\n请安装依赖:")
-        print("pip install easyocr pyautogui pyperclip keyboard openai pillow numpy")
+        print("pip install pyautogui pyperclip keyboard openai pillow numpy paddleocr paddlepaddle")
         sys.exit(1)
     if sys.version_info >= (3, 12):
         print(f"[WARNING] Python {sys.version_info.major}.{sys.version_info.minor} 可能不兼容")

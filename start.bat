@@ -4,7 +4,7 @@ title PaperAiChat
 setlocal enabledelayedexpansion
 
 echo ================================================
-echo       AI 聊天机器人 - 启动脚本
+echo        PaperAiChat v8.3 - 启动脚本
 echo ================================================
 echo.
 
@@ -45,19 +45,17 @@ echo.
 
 :: 检查并安装依赖
 echo [2/5] 检查依赖包...
-python -c "import easyocr, pyautogui, pyperclip, keyboard, openai, PIL, numpy, schedule, pyperclipimg" >nul 2>&1
+python -c "import pyautogui, pyperclip, keyboard, openai, PIL, numpy, paddleocr, rich, flask, flask_socketio" >nul 2>&1
 if errorlevel 1 (
     echo [信息] 正在安装依赖包（使用清华镜像源）...
     echo.
-    pip install easyocr -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install pyautogui -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install pyperclip -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install keyboard -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install openai -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install Pillow -i https://pypi.tuna.tsinghua.edu.cn/simple
     pip install numpy -i https://pypi.tuna.tsinghua.edu.cn/simple
-    pip install schedule -i https://pypi.tuna.tsinghua.edu.cn/simple
-    pip install pyperclipimg -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip install pyautogui pyperclip keyboard openai pillow numpy paddleocr rich flask flask-socketio pyperclipimg -i https://pypi.tuna.tsinghua.edu.cn/simple
     echo.
     echo [成功] 依赖包安装完成
 ) else (

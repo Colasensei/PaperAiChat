@@ -13,9 +13,14 @@ except ImportError:
 class ConfigUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("PaperAiChat 完整配置界面")
-        self.root.geometry("900x1000")
+        self.root.title("PaperAiChat 配置中心 v8.3")
+        self.root.geometry("960x720")
+        self.root.minsize(800, 600)
         self.root.resizable(True, True)
+        
+        # 设置样式
+        style = ttk.Style()
+        style.theme_use('clam' if 'clam' in style.theme_names() else 'default')
         
         self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
         self.config = self.load_config()
@@ -25,7 +30,12 @@ class ConfigUI:
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    config = json.load(f)
+                # 自动解密 API Key
+                raw_key = config.get('api_key', '')
+                if raw_key.startswith('ENC:'):
+                    config['api_key'] = self._decrypt_api_key(raw_key)
+                return config
             except:
                 return self.get_default_config()
         return self.get_default_config()
@@ -85,21 +95,35 @@ class ConfigUI:
                 "enabled": True,
                 "format": "%Y年%m月%d日 %H:%M:%S"
             },
-            "memory_max_count": 30
+            "memory_max_count": 30,
+            "web_dashboard": {
+                "enabled": true,
+                "port": 5888
+            }
         }
     
     def save_config(self):
         try:
             self.update_config()
+            saved_config = dict(self.config)
+            api_key = saved_config.get('api_key', '')
+            if api_key:
+                saved_config['api_key'] = self._encrypt_api_key(api_key)
             with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=2)
-            messagebox.showinfo("成功", "配置已保存")
+                json.dump(saved_config, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("成功", "配置已保存（API Key 已加密存储）")
+            self.status_var.set("配置已保存成功")
         except Exception as e:
             messagebox.showerror("错误", f"保存失败: {e}")
+            self.status_var.set(f"保存失败: {e}")
     
     def create_widgets(self):
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        # 主容器（支持滚动）
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill='both', expand=True)
+        
+        notebook = ttk.Notebook(main_frame)
+        notebook.pack(fill='both', expand=True, padx=10, pady=(10, 0))
         
         self.create_api_tab(notebook)
         self.create_ocr_tab(notebook)
@@ -112,13 +136,20 @@ class ConfigUI:
         self.create_command_tab(notebook)     # 新增：指令系统
         self.create_memory_tab(notebook)      # 新增：记忆系统
         self.create_emoticon_tab(notebook)
+        self.create_web_tab(notebook)         # 新增：Web 仪表盘
         
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(fill='x', padx=10, pady=10)
-        ttk.Button(button_frame, text="保存配置", command=self.save_config).pack(side='left', padx=5)
-        ttk.Button(button_frame, text="恢复默认", command=self.reset_default).pack(side='left', padx=5)
-        ttk.Button(button_frame, text="打开配置目录", command=self.open_config_dir).pack(side='left', padx=5)
-        ttk.Button(button_frame, text="退出", command=self.root.quit).pack(side='right', padx=5)
+        # 底部按钮区域
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', padx=10, pady=(10, 0))
+        ttk.Button(button_frame, text="💾 保存配置", command=self.save_config).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="🔄 恢复默认", command=self.reset_default).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="📂 打开目录", command=self.open_config_dir).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="❌ 退出", command=self.root.quit).pack(side='right', padx=5)
+        
+        # 状态栏
+        self.status_var = tk.StringVar(value=f"就绪 | 配置文件: {self.config_path}")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief='sunken', anchor='w')
+        status_bar.pack(fill='x', padx=10, pady=5)
     
     # ==================== 各选项卡创建方法 ====================
     def create_api_tab(self, notebook):
@@ -128,7 +159,11 @@ class ConfigUI:
         row = 0
         ttk.Label(frame, text="API密钥:").grid(row=row, column=0, sticky='w', padx=10, pady=5)
         self.api_key_var = tk.StringVar(value=self.config.get('api_key', ''))
-        ttk.Entry(frame, textvariable=self.api_key_var, width=60, show='*').grid(row=row, column=1, sticky='ew', padx=10, pady=5)
+        self.api_key_entry = ttk.Entry(frame, textvariable=self.api_key_var, width=60, show='*')
+        self.api_key_entry.grid(row=row, column=1, sticky='ew', padx=10, pady=5)
+        self.show_key_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="显示", variable=self.show_key_var, 
+                        command=self.toggle_api_key_visibility).grid(row=row, column=2, padx=5, pady=5)
         row += 1
         ttk.Label(frame, text="API网址:").grid(row=row, column=0, sticky='w', padx=10, pady=5)
         self.api_url_var = tk.StringVar(value=self.config.get('api_url', 'https://api.deepseek.com'))
@@ -391,6 +426,23 @@ class ConfigUI:
         row += 1
         ttk.Label(frame, text="例如: 今天天气真好 [sun]").grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=5)
     
+    def create_web_tab(self, notebook):
+        """Web 仪表盘配置"""
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="Web仪表盘")
+        web = self.config.get('web_dashboard', {})
+        row = 0
+        self.web_enabled_var = tk.BooleanVar(value=web.get('enabled', True))
+        ttk.Checkbutton(frame, text="启用 Web 仪表盘", variable=self.web_enabled_var).grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+        row += 1
+        ttk.Label(frame, text="监听端口:").grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        self.web_port_var = tk.IntVar(value=web.get('port', 5888))
+        ttk.Spinbox(frame, from_=1024, to=65535, textvariable=self.web_port_var, width=10).grid(row=row, column=1, sticky='w', padx=10, pady=5)
+        row += 1
+        ttk.Label(frame, text="启动后访问: http://127.0.0.1:" + str(web.get('port', 5888))).grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=10)
+        row += 1
+        ttk.Label(frame, text="功能: 实时监控状态、API数据、日志、消息记录、远程控制、配置管理").grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=5)
+    
     # ==================== 辅助方法 ====================
     def browse_prompt_file(self):
         filename = filedialog.askopenfilename(title="选择提示词文件", filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
@@ -416,6 +468,42 @@ class ConfigUI:
     
     def open_config_dir(self):
         os.startfile(os.path.dirname(self.config_path))
+    
+    def toggle_api_key_visibility(self):
+        """切换 API Key 显示/隐藏"""
+        if self.show_key_var.get():
+            self.api_key_entry.config(show='')
+        else:
+            self.api_key_entry.config(show='*')
+    
+    def _encrypt_api_key(self, plain_text):
+        """简单的 API Key 混淆存储"""
+        if not plain_text:
+            return ""
+        try:
+            import uuid
+            key = str(uuid.getnode())
+            result = []
+            for i, c in enumerate(plain_text):
+                result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+            return 'ENC:' + ''.join(result).encode('utf-8').hex()
+        except Exception:
+            return plain_text
+    
+    def _decrypt_api_key(self, encrypted_str):
+        """解密 API Key"""
+        if not encrypted_str or not encrypted_str.startswith('ENC:'):
+            return encrypted_str
+        try:
+            encrypted = bytes.fromhex(encrypted_str[4:]).decode('utf-8')
+            import uuid
+            key = str(uuid.getnode())
+            result = []
+            for i, c in enumerate(encrypted):
+                result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+            return ''.join(result)
+        except Exception:
+            return ""
     
     def reset_default(self):
         if messagebox.askyesno("确认", "确定要恢复默认配置吗？"):
@@ -488,6 +576,10 @@ class ConfigUI:
         # 表情
         self.enable_emoticon_var.set(self.config.get('enable_emoticon', True))
         self.emoticon_folder_var.set(self.config.get('emoticon_folder', 'Emoticon'))
+        # Web 仪表盘
+        web = self.config.get('web_dashboard', {})
+        self.web_enabled_var.set(web.get('enabled', True))
+        self.web_port_var.set(web.get('port', 5888))
     
     def update_config(self):
         # API
@@ -568,15 +660,11 @@ class ConfigUI:
         # 表情
         self.config['enable_emoticon'] = self.enable_emoticon_var.get()
         self.config['emoticon_folder'] = self.emoticon_folder_var.get()
-    
-    def save_config(self):
-        try:
-            self.update_config()
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=2)
-            messagebox.showinfo("成功", "配置已保存")
-        except Exception as e:
-            messagebox.showerror("错误", f"保存失败: {e}")
+        # Web 仪表盘
+        self.config['web_dashboard'] = {
+            "enabled": self.web_enabled_var.get(),
+            "port": self.web_port_var.get()
+        }
 
 def main():
     root = tk.Tk()
